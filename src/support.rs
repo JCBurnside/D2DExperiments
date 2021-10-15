@@ -1,34 +1,20 @@
 use bindings::Windows::Win32::{
     Foundation::HWND,
-    Graphics::Direct2D::{
-        D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
-        ID2D1StrokeStyle, D2D1_CAP_STYLE_FLAT, D2D1_COLOR_F, D2D1_DASH_STYLE_SOLID,
-        D2D1_DEBUG_LEVEL_INFORMATION, D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-        D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_LINE_JOIN_MITER, D2D1_PRESENT_OPTIONS,
-        D2D1_STROKE_STYLE_PROPERTIES, D2D1_STROKE_STYLE_PROPERTIES1, D2D_SIZE_U,
+    Graphics::{
+        Direct2D::{
+            D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
+            D2D1_BRUSH_PROPERTIES, D2D1_COLOR_F, D2D1_DEBUG_LEVEL_INFORMATION,
+            D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_MULTI_THREADED,
+            D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D_SIZE_U,
+        },
+        DirectWrite::{
+            DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_ISOLATED,
+            DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
+        },
     },
     UI::WindowsAndMessaging::{GetClientRect, WINDOW_LONG_PTR_INDEX},
 };
-use windows::{Abi, Interface};
-
-pub fn create_brush(target: &ID2D1HwndRenderTarget) -> windows::Result<ID2D1SolidColorBrush> {
-    unsafe { target.CreateSolidColorBrush(&Color::RGB(0.0, 1.0, 0.0).into(), &Default::default()) }
-}
-
-pub fn create_stroke(factory: &ID2D1Factory1) -> windows::Result<ID2D1StrokeStyle> {
-    let props = {
-        let mut out = D2D1_STROKE_STYLE_PROPERTIES::default();
-        out.startCap = D2D1_CAP_STYLE_FLAT;
-        out.endCap = D2D1_CAP_STYLE_FLAT;
-        out.dashCap = D2D1_CAP_STYLE_FLAT;
-        out.dashStyle = D2D1_DASH_STYLE_SOLID;
-        out.miterLimit = 1.0;
-        out.dashOffset = 0.0;
-        out.lineJoin = D2D1_LINE_JOIN_MITER;
-        out
-    };
-    unsafe { factory.CreateStrokeStyle(&props, std::ptr::null(), 0) }
-}
+use windows::Interface;
 
 #[derive(Clone, Copy)]
 pub enum Color {
@@ -54,6 +40,17 @@ impl Into<D2D1_COLOR_F> for Color {
     }
 }
 
+pub fn create_brush(
+    target: &ID2D1HwndRenderTarget,
+    color: &Color,
+) -> windows::Result<ID2D1SolidColorBrush> {
+    let props = D2D1_BRUSH_PROPERTIES {
+        opacity: 1.0,
+        ..Default::default()
+    };
+    unsafe { target.CreateSolidColorBrush(&color.into(), &props) }
+}
+
 pub fn create_render_target(
     factory: &ID2D1Factory1,
     hwnd: HWND,
@@ -72,6 +69,34 @@ pub fn create_render_target(
     unsafe { factory.CreateHwndRenderTarget(&Default::default(), &options) }
 }
 
+pub fn create_text_factory() -> windows::Result<IDWriteFactory> {
+    unsafe {
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, &IDWriteFactory::IID)
+            .and_then(|it| it.cast())
+    }
+}
+
+pub fn create_formater(factory: &IDWriteFactory) -> windows::Result<IDWriteTextFormat> {
+    let font = "calibri\0";
+    let mut family = None;
+    let family = unsafe {
+        factory
+            .GetSystemFontCollection(&mut family, false)
+            .map(|()| family.unwrap())?
+    };
+    unsafe {
+        factory.CreateTextFormat(
+            font,
+            family,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            16.0,
+            font,
+        )
+    }
+}
+
 pub fn create_factory() -> windows::Result<ID2D1Factory1> {
     let options = {
         let mut out = D2D1_FACTORY_OPTIONS::default();
@@ -80,15 +105,15 @@ pub fn create_factory() -> windows::Result<ID2D1Factory1> {
         }
         out
     };
-    let mut result = None;
+    let mut result: Option<ID2D1Factory1> = None;
     unsafe {
         D2D1CreateFactory(
             D2D1_FACTORY_TYPE_SINGLE_THREADED,
             &ID2D1Factory1::IID,
             &options,
-            result.set_abi(),
+            &mut result as *mut _ as *mut *mut _,
         )
-        .map(|()| result.unwrap())
+        .map(move |()| result.unwrap())
     }
 }
 #[allow(non_snake_case)]
