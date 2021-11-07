@@ -1,87 +1,114 @@
-use std::sync::{Arc, Mutex};
+use std::ffi::OsStr;
 
-use bindings::Windows::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, PSTR, WPARAM},
-    Graphics::Direct2D::{
-        ID2D1DeviceContext, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush, D2D_RECT_F,
+use windows::Win32::{
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, PWSTR, WPARAM},
+    Graphics::{
+        Direct2D::{
+            ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
+            D2D1_DRAW_TEXT_OPTIONS_NONE, D2D_RECT_F,
+        },
+        DirectWrite::{IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL},
     },
-    UI::WindowsAndMessaging::{
-        self, CreateWindowExA, DefWindowProcA, LoadCursorW, RegisterClassA, CREATESTRUCTA,
-        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, IDC_IBEAM, WNDCLASSA, WS_CHILD,
-        WS_CHILDWINDOW, WS_CLIPCHILDREN, WS_VISIBLE,
+    UI::{
+        Input::KeyboardAndMouse,
+        WindowsAndMessaging::{
+            self, CreateWindowExW, DefWindowProcW, LoadCursorW, RegisterClassW, CREATESTRUCTA,
+            CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_IBEAM, WNDCLASSW, WS_BORDER,
+            WS_CHILD, WS_CHILDWINDOW, WS_VISIBLE,
+        },
     },
 };
-use windows::Handle;
 
 use crate::support::{
-    create_brush, create_factory, create_render_target, Color, GetWindowLong, SetWindowLong,
+    self, create_brush, create_factory, create_formater, create_render_target, create_text_factory,
+    Color, GetWindowLong, SetWindowLong,
 };
 
 pub struct TextBox {
-    class: WNDCLASSA,
-    factory: ID2D1Factory1,
+    factory: Option<ID2D1Factory1>,
     target: Option<ID2D1HwndRenderTarget>,
+    text_factory: Option<IDWriteFactory>,
+    text_format: Option<IDWriteTextFormat>,
     green: Option<ID2D1SolidColorBrush>,
-    wc_name: PSTR,
+    black: Option<ID2D1SolidColorBrush>,
     handle: HWND,
+    data: String,
+    caret_pos: usize,
+    pos: (i32, i32),
+    width: i32,
+    height: i32,
 }
 
 impl TextBox {
-    pub fn new(target: HWND, instance: HINSTANCE) -> windows::Result<TextBox> {
-        let wc_name = PSTR(b"TextBox".as_ptr() as _);
-        let wc = WNDCLASSA {
+    pub fn new(pos: (i32, i32), width: i32, height: i32) -> Self {
+        Self {
+            factory: None,
+            target: None,
+            green: None,
+            black: None,
+            text_factory: None,
+            text_format: None,
+            handle: HWND::default(),
+            data: String::from("TEXTBOX"),
+            caret_pos: 0,
+            pos,
+            width,
+            height,
+        }
+    }
+
+    pub fn init(&mut self, target: HWND, instance: HINSTANCE) -> windows::runtime::Result<()> {
+        if self.factory.is_some() {
+            return Ok(());
+        }
+        #[allow(non_upper_case_globals)]
+        const wc_name : PWSTR = PWSTR(utf16_literal::utf16!("TextBox\0").as_ptr() as _);
+        let wc = WNDCLASSW {
             style: CS_VREDRAW | CS_HREDRAW,
             hCursor: unsafe { LoadCursorW(None, IDC_IBEAM) },
             lpfnWndProc: Some(Self::wnd_proc),
             lpszClassName: wc_name,
             ..Default::default()
         };
-        let atom = unsafe { RegisterClassA(&wc) };
+        let atom = unsafe { RegisterClassW(&wc) };
         debug_assert!(atom != 0, "FAILED TO REGISTER CLASS");
-
-        let mut this = Self {
-            class: wc,
-            factory: create_factory()?,
-            target: None,
-            green: None,
-            wc_name: wc_name.clone(),
-            handle: HWND::default(),
-        };
+        let name_os = OsStr::new("foo");
+        let name = PWSTR(utf16_literal::utf16!("foo").as_ptr() as _);
         let handle = unsafe {
-            CreateWindowExA(
+            CreateWindowExW(
                 Default::default(),
                 wc_name,
-                "foo",
-                WS_CHILD | WS_VISIBLE,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                100,
-                10,
+                name_os,
+                WS_CHILDWINDOW | WS_VISIBLE | WS_BORDER,
+                self.pos.0,
+                self.pos.1,
+                self.width,
+                self.height,
                 target,
                 None,
                 instance,
-                &this as *const _ as _,
+                self as *const Self as _,
             )
         };
 
-        debug_assert!(!handle.is_invalid());
-        debug_assert!(handle == this.handle);
-        if this.target.is_none() {
-            let target = create_render_target(&this.factory, this.handle).unwrap();
-            this.green = Some(create_brush(&target, &Color::RGB(0.0, 1.0, 0.0)).unwrap());
-            this.target = Some(target);
-        }
-        Ok(this)
+        debug_assert!(handle.0 != 0);
+        debug_assert!(handle == self.handle);
+
+        self.factory = Some(create_factory()?);
+        self.text_factory = Some(create_text_factory()?);
+        Ok(())
     }
 
-    fn draw(&mut self) {
+    pub(crate) fn draw(&mut self) {
         if self.target.is_none() {
-            self.target = Some(create_render_target(&self.factory, self.handle).unwrap());
+            let target =
+                create_render_target(&self.factory.as_ref().unwrap(), self.handle).unwrap();
+            self.green = Some(create_brush(&target, &Color::RGB(0.0, 1.0, 0.0)).unwrap());
+            self.black = Some(create_brush(&target, &Color::RGB(0.0, 0.0, 0.0)).unwrap());
+            self.target = Some(target);
+            self.text_format = Some(create_formater(self.text_factory.as_ref().unwrap()).unwrap());
         }
         let target = self.target.as_ref().unwrap();
-        if self.green.is_none() {
-            self.green = Some(create_brush(&target, &Color::RGB(0.0, 1.0, 0.0)).unwrap());
-        }
         let green = self.green.as_ref().unwrap();
         unsafe {
             let size = target.GetSize();
@@ -95,6 +122,15 @@ impl TextBox {
             target.BeginDraw();
 
             target.FillRectangle(&rect, green);
+            target.DrawText(
+                self.data.clone(),
+                self.data.len() as u32,
+                self.text_format.as_ref().unwrap(),
+                &rect,
+                self.black.as_ref().unwrap(),
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
             target
                 .EndDraw(std::ptr::null_mut(), std::ptr::null_mut())
                 .unwrap();
@@ -106,15 +142,51 @@ impl TextBox {
 
     unsafe fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         match msg {
-            WindowsAndMessaging::WM_PAINT => {
-                self.draw();
+            // WindowsAndMessaging::WM_PAINT | WindowsAndMessaging::WM_DISPLAYCHANGE => {
+            //     self.draw();
+            //     LRESULT(0)
+            // },
+            // WindowsAndMessaging::WM_SIZE if wparam.0 as u32 == WindowsAndMessaging::SIZE_MAXIMIZED => {
+            //     self.draw();
+            //     DefWindowProcW(self.handle, msg, wparam, lparam)
+            // },
+            WindowsAndMessaging::WM_LBUTTONDOWN => {
+                KeyboardAndMouse::SetFocus(self.handle);
                 LRESULT(0)
             }
-            WindowsAndMessaging::WM_DISPLAYCHANGE => {
-                self.draw();
+            WindowsAndMessaging::WM_CHAR => {
+                if wparam.0 == 0x08 {
+                    //backspace char
+                    self.data.pop();
+                    self.draw();
+                    return LRESULT(0);
+                }
+                if wparam.0 == 0x0B {
+                    //enter is VT?!?!
+                    KeyboardAndMouse::SetFocus(HWND::default());
+                }
+                let meta = support::Keymeta::from_bytes(u32::to_ne_bytes(lparam.0 as u32));
+                let repeat = meta.count();
+                println!("{:#04x}", wparam.0);
+                let to_add = char::from_u32(wparam.0 as u32);
+                match to_add {
+                    Some(c) => {
+                        println!("adding {:#} {} time(s) raw {}", c, repeat, wparam.0);
+                        for _ in 0..repeat {
+                            self.data.push(c);
+                        }
+                        self.draw();
+                    }
+                    None => {
+                        return DefWindowProcW(self.handle, msg, wparam, lparam);
+                    }
+                }
                 LRESULT(0)
             }
-            _ => DefWindowProcA(self.handle, msg, wparam, lparam),
+            _ => {
+                println!("NOT HANDLED {}", msg);
+                DefWindowProcW(self.handle, msg, wparam, lparam)
+            }
         }
     }
 
@@ -125,7 +197,7 @@ impl TextBox {
         lparam: LPARAM,
     ) -> LRESULT {
         if msg == WindowsAndMessaging::WM_NCCREATE {
-            let cs = lparam.0 as *const CREATESTRUCTA;
+            let cs = lparam.0 as *const CREATESTRUCTW;
             let this = (*cs).lpCreateParams as *mut Self;
             (*this).set_handle(hwnd);
 
@@ -136,6 +208,6 @@ impl TextBox {
                 return (*this).handle_message(msg, wparam, lparam);
             }
         }
-        DefWindowProcA(hwnd, msg, wparam, lparam)
+        DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 }

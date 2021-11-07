@@ -6,7 +6,22 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bindings = {path="./bindings"}
-windows = "0.21.0"
+utf16_literal = "0.2.1"
 anyhow = "1.0.43"
 uuid = "0.8"
+modular-bitfield ="0.11.2"
+lazy_static = "1.4.0"
+[dependencies.windows]
+version = "0.25.0"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Direct2D",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Com",
+    "Foundation_Numerics",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi"
+]
