@@ -1,7 +1,7 @@
 use windows::{
     runtime::Interface,
     Win32::{
-        Foundation::{HWND, LPARAM, WPARAM},
+        Foundation::HWND,
         Graphics::{
             Direct2D::{
                 D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,

@@ -1,17 +1,24 @@
-use windows::Win32::{Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, PWSTR, WPARAM}, UI::WindowsAndMessaging::{self, DefWindowProcW, CREATESTRUCTW, GWLP_USERDATA}};
+use windows::Win32::{
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    UI::WindowsAndMessaging::{
+        self, DefWindowProcW, CREATESTRUCTW, GWLP_USERDATA,
+    },
+};
 
 use crate::support::{GetWindowLong, SetWindowLong};
 
-
-trait IWindow {
-
+pub trait IWindow {
     /// handle any messages from the win32 api.
     fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
 
     /// This will be called before any other operation can occur.  It should call init on any children it may have.
     /// target and instance will be [None] if root.  should init all childern.
-    fn init(self: Box<Self>, target:Option<HWND>, instance:Option<HINSTANCE>) -> windows::runtime::Result<()>;
-    
+    fn init(
+        &self,
+        parent: Option<HWND>,
+        instance: Option<HINSTANCE>,
+    ) -> windows::runtime::Result<()>;
+
     // set the HWND handle of the window here.
     fn set_handle(&mut self, handle: HWND);
 
@@ -31,7 +38,7 @@ trait IWindow {
     ///     fn on_create(&mut self) -> Result<()> {
     ///         self.d2d_factory = Some(create_factory()?);
     ///     }
-    /// 
+    ///
     ///     //--snip--
     /// }
     /// ```
@@ -42,7 +49,9 @@ trait IWindow {
     /// do your drawing here. should call [draw](IWindow::draw) on any childern
     fn draw(&mut self) -> windows::runtime::Result<()>;
 
-    fn get_wc_name(&self)  -> PWSTR;
+    fn get_wc_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
     /// In general you should not override this function
     /// you should override [on_create](IWindow::on_create) instead for things needed to be done when WM_NCCREATE is triggered.
     /// for all other events you should use [handle_message](IWindow::handle_message).
@@ -71,4 +80,3 @@ trait IWindow {
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 }
-

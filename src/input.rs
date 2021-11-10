@@ -12,16 +12,17 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse,
         WindowsAndMessaging::{
-            self, CreateWindowExW, DefWindowProcW, LoadCursorW, RegisterClassW, CREATESTRUCTA,
-            CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_IBEAM, WNDCLASSW, WS_BORDER,
-            WS_CHILD, WS_CHILDWINDOW, WS_VISIBLE,
+            self, CreateWindowExW, DefWindowProcW, LoadCursorW, RegisterClassW, CS_HREDRAW, CS_VREDRAW, IDC_IBEAM, WNDCLASSW, WS_BORDER, WS_CHILDWINDOW, WS_VISIBLE,
         },
     },
 };
 
-use crate::support::{
-    self, create_brush, create_factory, create_formater, create_render_target, create_text_factory,
-    Color, GetWindowLong, SetWindowLong,
+use crate::{
+    interface::*,
+    support::{
+        self, create_brush, create_factory, create_formater, create_render_target,
+        create_text_factory, Color,
+    },
 };
 
 pub struct TextBox {
@@ -33,7 +34,7 @@ pub struct TextBox {
     black: Option<ID2D1SolidColorBrush>,
     handle: HWND,
     data: String,
-    caret_pos: usize,
+    _caret_pos: usize,
     pos: (i32, i32),
     width: i32,
     height: i32,
@@ -50,19 +51,76 @@ impl TextBox {
             text_format: None,
             handle: HWND::default(),
             data: String::from("TEXTBOX"),
-            caret_pos: 0,
+            _caret_pos: 0,
             pos,
             width,
             height,
         }
     }
+}
 
-    pub fn init(&mut self, target: HWND, instance: HINSTANCE) -> windows::runtime::Result<()> {
+impl IWindow for TextBox {
+    fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        unsafe {
+            match msg {
+                // WindowsAndMessaging::WM_PAINT | WindowsAndMessaging::WM_DISPLAYCHANGE => {
+                //     self.draw();
+                //     LRESULT(0)
+                // },
+                // WindowsAndMessaging::WM_SIZE if wparam.0 as u32 == WindowsAndMessaging::SIZE_MAXIMIZED => {
+                //     self.draw();
+                //     DefWindowProcW(self.handle, msg, wparam, lparam)
+                // },
+                WindowsAndMessaging::WM_LBUTTONDOWN => {
+                    KeyboardAndMouse::SetFocus(self.handle);
+                    LRESULT(0)
+                }
+                WindowsAndMessaging::WM_CHAR => {
+                    if wparam.0 as u16 == KeyboardAndMouse::VK_BACK.0 {
+                        //backspace char
+                        self.data.pop();
+                        // self.draw().unwrap();
+                        return LRESULT(0);
+                    }
+                    if wparam.0 as u16 == KeyboardAndMouse::VK_RETURN.0 {
+                        KeyboardAndMouse::SetFocus(HWND::default());
+                        return LRESULT(0);
+                    }
+                    let meta = support::Keymeta::from_bytes(u32::to_ne_bytes(lparam.0 as u32));
+                    let repeat = meta.count();
+                    let to_add = char::from_u32(wparam.0 as u32);
+                    match to_add {
+                        Some(c) => {
+                            for _ in 0..repeat {
+                                self.data.push(c);
+                            }
+                            // self.draw();
+                        }
+                        None => {
+                            return DefWindowProcW(self.handle, msg, wparam, lparam);
+                        }
+                    }
+                    LRESULT(0)
+                }
+                _ => {
+                    DefWindowProcW(self.handle, msg, wparam, lparam)
+                }
+            }
+        }
+    }
+
+    fn init(
+        &self,
+        parent: Option<HWND>,
+        instance: Option<HINSTANCE>,
+    ) -> windows::runtime::Result<()> {
+        let target = parent.expect("CAN ONLY BE A CHILD WINDOW");
+        let instance = instance.expect("CAN ONLY BE A CHILD WINDOW");
         if self.factory.is_some() {
             return Ok(());
         }
-        #[allow(non_upper_case_globals)]
-        const wc_name : PWSTR = PWSTR(utf16_literal::utf16!("TextBox\0").as_ptr() as _);
+        let mut wc_name = self.get_wc_name().encode_utf16().collect::<Vec<u16>>();
+        let wc_name = PWSTR(wc_name.as_mut_ptr());
         let wc = WNDCLASSW {
             style: CS_VREDRAW | CS_HREDRAW,
             hCursor: unsafe { LoadCursorW(None, IDC_IBEAM) },
@@ -72,8 +130,7 @@ impl TextBox {
         };
         let atom = unsafe { RegisterClassW(&wc) };
         debug_assert!(atom != 0, "FAILED TO REGISTER CLASS");
-        let name_os = OsStr::new("foo");
-        let name = PWSTR(utf16_literal::utf16!("foo").as_ptr() as _);
+        let name_os = "foo";
         let handle = unsafe {
             CreateWindowExW(
                 Default::default(),
@@ -94,12 +151,20 @@ impl TextBox {
         debug_assert!(handle.0 != 0);
         debug_assert!(handle == self.handle);
 
+        Ok(())
+    }
+
+    fn set_handle(&mut self, handle: HWND) {
+        self.handle = handle;
+    }
+
+    fn on_create(&mut self) -> windows::runtime::Result<()> {
         self.factory = Some(create_factory()?);
         self.text_factory = Some(create_text_factory()?);
         Ok(())
     }
 
-    pub(crate) fn draw(&mut self) {
+    fn draw(&mut self) -> windows::runtime::Result<()> {
         if self.target.is_none() {
             let target =
                 create_render_target(&self.factory.as_ref().unwrap(), self.handle).unwrap();
@@ -131,83 +196,7 @@ impl TextBox {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            target
-                .EndDraw(std::ptr::null_mut(), std::ptr::null_mut())
-                .unwrap();
+            target.EndDraw(std::ptr::null_mut(), std::ptr::null_mut())
         }
-    }
-    fn set_handle(&mut self, hwnd: HWND) {
-        self.handle = hwnd;
-    }
-
-    unsafe fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        match msg {
-            // WindowsAndMessaging::WM_PAINT | WindowsAndMessaging::WM_DISPLAYCHANGE => {
-            //     self.draw();
-            //     LRESULT(0)
-            // },
-            // WindowsAndMessaging::WM_SIZE if wparam.0 as u32 == WindowsAndMessaging::SIZE_MAXIMIZED => {
-            //     self.draw();
-            //     DefWindowProcW(self.handle, msg, wparam, lparam)
-            // },
-            WindowsAndMessaging::WM_LBUTTONDOWN => {
-                KeyboardAndMouse::SetFocus(self.handle);
-                LRESULT(0)
-            }
-            WindowsAndMessaging::WM_CHAR => {
-                if wparam.0 == 0x08 {
-                    //backspace char
-                    self.data.pop();
-                    self.draw();
-                    return LRESULT(0);
-                }
-                if wparam.0 == 0x0B {
-                    //enter is VT?!?!
-                    KeyboardAndMouse::SetFocus(HWND::default());
-                }
-                let meta = support::Keymeta::from_bytes(u32::to_ne_bytes(lparam.0 as u32));
-                let repeat = meta.count();
-                println!("{:#04x}", wparam.0);
-                let to_add = char::from_u32(wparam.0 as u32);
-                match to_add {
-                    Some(c) => {
-                        println!("adding {:#} {} time(s) raw {}", c, repeat, wparam.0);
-                        for _ in 0..repeat {
-                            self.data.push(c);
-                        }
-                        self.draw();
-                    }
-                    None => {
-                        return DefWindowProcW(self.handle, msg, wparam, lparam);
-                    }
-                }
-                LRESULT(0)
-            }
-            _ => {
-                println!("NOT HANDLED {}", msg);
-                DefWindowProcW(self.handle, msg, wparam, lparam)
-            }
-        }
-    }
-
-    unsafe extern "system" fn wnd_proc(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        if msg == WindowsAndMessaging::WM_NCCREATE {
-            let cs = lparam.0 as *const CREATESTRUCTW;
-            let this = (*cs).lpCreateParams as *mut Self;
-            (*this).set_handle(hwnd);
-
-            SetWindowLong(hwnd, GWLP_USERDATA, this as _);
-        } else {
-            let this = GetWindowLong(hwnd, GWLP_USERDATA) as *mut Self;
-            if !this.is_null() {
-                return (*this).handle_message(msg, wparam, lparam);
-            }
-        }
-        DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 }

@@ -10,7 +10,7 @@ utf16_literal = "0.2.1"
 anyhow = "1.0.43"
 uuid = "0.8"
 modular-bitfield ="0.11.2"
-lazy_static = "1.4.0"
+widestring = "0.5.1"
 [dependencies.windows]
 version = "0.25.0"
 features = [
