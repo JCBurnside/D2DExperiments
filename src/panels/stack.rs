@@ -1,4 +1,4 @@
-use std::iter::once;
+use std::{iter::once, sync::atomic::{AtomicBool, Ordering}};
 
 use windows::Win32::{
     Foundation::{HWND, PWSTR, RECT},
@@ -27,14 +27,13 @@ impl StackPanel {
     pub fn new(
         orientation: Orientation,
         children: Vec<Box<dyn IWindow>>,
-        pos: (i32, i32),
         fill: (Fill, Fill),
     ) -> Box<Self> {
         Box::new(Self {
             orientation,
             children,
             fill,
-            pos,
+            pos:(0,0),
             handle: HWND(0),
         })
     }
@@ -68,17 +67,23 @@ impl IWindow for StackPanel {
                 .chain(once(0))
                 .collect::<Vec<_>>();
             let wc_name = PWSTR(wc_name.as_mut_ptr());
+            lazy_static::lazy_static! {
+                static ref REGISTERED : AtomicBool = AtomicBool::new(false);
+            }
+            if !REGISTERED.load(Ordering::Acquire) {
 
-            let wc = WNDCLASSW {
-                style: CS_VREDRAW | CS_HREDRAW,
-                hCursor: LoadCursorW(None, IDC_ARROW),
-                lpfnWndProc: Some(Self::wnd_proc),
-                hInstance: instance,
-                lpszClassName: wc_name,
-                ..Default::default()
-            };
-            let atom = RegisterClassW(&wc);
-            debug_assert!(atom != 0, "Failed to register class");
+                let wc = WNDCLASSW {
+                    style: CS_VREDRAW | CS_HREDRAW,
+                    hCursor: LoadCursorW(None, IDC_ARROW),
+                    lpfnWndProc: Some(Self::wnd_proc),
+                    hInstance: instance,
+                    lpszClassName: wc_name,
+                    ..Default::default()
+                };
+                let atom = RegisterClassW(&wc);
+                debug_assert!(atom != 0, "Failed to register class");
+                REGISTERED.store(true, Ordering::Release);
+            }
 
             let mut rect = RECT::default();
             if !GetClientRect(parent, &mut rect).as_bool() {
@@ -150,9 +155,7 @@ impl IWindow for StackPanel {
                     let width = match width_fill {
                         Fill::Fill => width.checked_sub(used_width).unwrap_or(0) as u32,
                         Fill::Fixed(width) => width,
-                        Fill::Percent(perc) => (width.checked_sub(used_width).unwrap_or(0) as f32
-                            * perc)
-                            .floor() as u32,
+                        Fill::Percent(perc) => (width as f32 * perc).floor() as u32,
                     };
                     let height = match height_fill {
                         Fill::Fill => height as u32,
@@ -186,9 +189,7 @@ impl IWindow for StackPanel {
                     let height = match height_fill {
                         Fill::Fill => height.checked_sub(used_height).unwrap_or(0) as u32,
                         Fill::Fixed(height) => height,
-                        Fill::Percent(perc) => (height.checked_sub(used_height).unwrap_or(0) as f32
-                            * perc)
-                            .floor() as u32,
+                        Fill::Percent(perc) => (height as f32 * perc).floor() as u32,
                     };
                     let y = used_height;
                     used_height += height;

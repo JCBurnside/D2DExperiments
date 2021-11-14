@@ -34,9 +34,8 @@ impl MainWindow {
                 Orientation::Vertical,
                 vec![
                     Box::new(TextBox::new((0, 0), Fill::Fill, Fill::Fixed(100))),
-                    Test::new(),
+                    StackPanel::new(Orientation::Horizontal, vec![Test::new((Fill::Percent(0.25),Fill::Fill)),Test::new((Fill::Percent(0.75),Fill::Fill))],(Fill::Fill,Fill::Fill))
                 ],
-                (0, 0),
                 (Fill::Fill, Fill::Fill),
             ),
         }

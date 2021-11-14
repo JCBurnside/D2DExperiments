@@ -1,21 +1,14 @@
-use std::iter::once;
+use std::{iter::once, sync::atomic::{AtomicBool, Ordering}};
 
 use crate::{interface::IWindow, support::*};
-use windows::Win32::{
-    Foundation::{HWND, PWSTR, RECT},
-    Graphics::{
+use windows::Win32::{Foundation::{HWND, PWSTR, RECT}, Graphics::{
         Direct2D::{
             Common::{D2D_RECT_F, D2D_SIZE_U},
             ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
             D2D1_DRAW_TEXT_OPTIONS_NONE,
         },
         DirectWrite::{IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL},
-    },
-    UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, GetClientRect, RegisterClassW, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, WNDCLASSW, WS_CHILDWINDOW, WS_VISIBLE,
-    },
-};
+    }, UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, GetClientRect, IDC_ARROW, LoadCursorW, RegisterClassW, WNDCLASSW, WS_CHILDWINDOW, WS_VISIBLE}};
 pub struct Test {
     handle: HWND,
     factory: Option<ID2D1Factory1>,
@@ -24,10 +17,11 @@ pub struct Test {
     brush: Option<ID2D1SolidColorBrush>,
     black: Option<ID2D1SolidColorBrush>,
     text_format: Option<IDWriteTextFormat>,
+    fill : (Fill,Fill),
 }
 
 impl Test {
-    pub fn new() -> Box<Self> {
+    pub fn new(fill:(Fill,Fill)) -> Box<Self> {
         Box::new(Self {
             handle: HWND::default(),
             factory: None,
@@ -36,6 +30,7 @@ impl Test {
             brush: None,
             black: None,
             text_format: None,
+            fill,
         })
     }
 }
@@ -69,17 +64,23 @@ impl IWindow for Test {
             }
             debug_assert!(wc_name.len() < 256);
             let wc_name = PWSTR(wc_name.as_mut_ptr());
-            let wc = WNDCLASSW {
-                // hCursor: LoadCursorW(None, IDC_ARROW),
-                style: CS_VREDRAW | CS_HREDRAW,
-                lpfnWndProc: Some(Self::wnd_proc),
-                hInstance: instance,
-                lpszClassName: wc_name,
-                ..Default::default()
-            };
-            let atom = RegisterClassW(&wc);
+            lazy_static::lazy_static! {
+                static ref REGISTERED : AtomicBool = AtomicBool::new(false);
+            }
+            if !REGISTERED.load(Ordering::Acquire) {
 
-            debug_assert!(atom != 0, "FAILED TO REGISTER CLASS");
+                let wc = WNDCLASSW {
+                    style: CS_VREDRAW | CS_HREDRAW,
+                    hCursor: LoadCursorW(None, IDC_ARROW),
+                    lpfnWndProc: Some(Self::wnd_proc),
+                    hInstance: instance,
+                    lpszClassName: wc_name,
+                    ..Default::default()
+                };
+                let atom = RegisterClassW(&wc);
+                debug_assert!(atom != 0, "Failed to register class");
+                REGISTERED.store(true, Ordering::Release);
+            }
             let handle = CreateWindowExW(
                 Default::default(),
                 wc_name,
@@ -173,5 +174,9 @@ impl IWindow for Test {
 
     fn get_handle(&self) -> HWND {
         self.handle
+    }
+
+    fn get_fill(&self) -> (Fill, Fill) {
+        self.fill
     }
 }
