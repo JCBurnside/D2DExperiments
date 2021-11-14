@@ -1,16 +1,14 @@
-#![feature(backtrace)]
-#![feature(once_cell)]
-#![feature(type_name_of_val)]
 #![allow(non_snake_case)]
-
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 mod input;
 mod interface;
+mod panels;
 mod support;
+mod test;
 mod window;
 
-fn main() -> windows::runtime::Result<()> {
+fn main() -> anyhow::Result<()> {
     unsafe {
         CoInitializeEx(std::ptr::null_mut(), COINIT_MULTITHREADED)?;
     };

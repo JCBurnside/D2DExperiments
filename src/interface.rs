@@ -1,11 +1,9 @@
 use windows::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-    UI::WindowsAndMessaging::{
-        self, DefWindowProcW, CREATESTRUCTW, GWLP_USERDATA,
-    },
+    UI::WindowsAndMessaging::{self, DefWindowProcW, CREATESTRUCTW, GWLP_USERDATA},
 };
 
-use crate::support::{GetWindowLong, SetWindowLong};
+use crate::support::{hiword, loword, Fill, GetWindowLong, SetWindowLong};
 
 pub trait IWindow {
     /// handle any messages from the win32 api.
@@ -13,11 +11,7 @@ pub trait IWindow {
 
     /// This will be called before any other operation can occur.  It should call init on any children it may have.
     /// target and instance will be [None] if root.  should init all childern.
-    fn init(
-        &self,
-        parent: Option<HWND>,
-        instance: Option<HINSTANCE>,
-    ) -> windows::runtime::Result<()>;
+    fn init(&self, parent: Option<HWND>, instance: Option<HINSTANCE>) -> anyhow::Result<()>;
 
     // set the HWND handle of the window here.
     fn set_handle(&mut self, handle: HWND);
@@ -29,7 +23,7 @@ pub trait IWindow {
     /// ```
     /// use doc::IWindow;
     /// use doc::windows::Windows::Win32::Graphics::Direct2D as D2D;
-    /// use doc::windows::runtime::Result;
+    /// use doc::anyhow:Result;
     /// struct Foo {
     ///     //--snip--
     ///     d2d_factory : Option<D2D::IFactory>
@@ -42,16 +36,25 @@ pub trait IWindow {
     ///     //--snip--
     /// }
     /// ```
-    fn on_create(&mut self) -> windows::runtime::Result<()> {
+    fn on_create(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 
     /// do your drawing here. should call [draw](IWindow::draw) on any childern
-    fn draw(&mut self) -> windows::runtime::Result<()>;
+    fn draw(&mut self) -> anyhow::Result<()>;
+
+    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()>;
 
     fn get_wc_name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
+
+    fn get_handle(&self) -> HWND;
+
+    fn get_fill(&self) -> (Fill, Fill) {
+        (Fill::Fill, Fill::Fill)
+    }
+
     /// In general you should not override this function
     /// you should override [on_create](IWindow::on_create) instead for things needed to be done when WM_NCCREATE is triggered.
     /// for all other events you should use [handle_message](IWindow::handle_message).
@@ -74,7 +77,14 @@ pub trait IWindow {
         } else {
             let this = GetWindowLong(hwnd, GWLP_USERDATA) as *mut Self;
             if !this.is_null() {
-                return (*this).handle_message(msg, wparam, lparam);
+                if msg == WindowsAndMessaging::WM_SIZE {
+                    let width = loword(lparam.0);
+                    let height = hiword(lparam.0);
+
+                    (*this).resize(width as u32, height as u32).unwrap();
+                } else {
+                    return (*this).handle_message(msg, wparam, lparam);
+                }
             }
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)

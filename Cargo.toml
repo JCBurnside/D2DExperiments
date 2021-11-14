@@ -10,18 +10,23 @@ utf16_literal = "0.2.1"
 anyhow = "1.0.43"
 uuid = "0.8"
 modular-bitfield ="0.11.2"
-widestring = "0.5.1"
+widestring = "0.5.1" 
 [dependencies.windows]
-version = "0.25.0"
+version = "0.26.0"
+default-features = false
 features = [
+    "std",
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi",
-    "Win32_Graphics_Direct2D",
-    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi", 
+    "Win32_Graphics_Direct2D", 
+    "Win32_Graphics_Direct2D_Common", 
+    "Win32_System_LibraryLoader", 
     "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_Com",
-    "Foundation_Numerics",
-    "Win32_Graphics_DirectWrite",
-    "Win32_Graphics_Dxgi"
+    "Win32_System_Com", 
+    "Foundation_Numerics", 
+    "Win32_Graphics_DirectWrite", 
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Diagnostics_Debug"
 ]

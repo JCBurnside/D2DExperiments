@@ -1,49 +1,48 @@
+use std::iter::once;
+
 use windows::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, PWSTR, WPARAM},
-    Graphics::{
-        Direct2D::{
-            ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
-            D2D1_DRAW_TEXT_OPTIONS_NONE, D2D_RECT_F,
-        },
-        DirectWrite::{IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL},
-    },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
-        self, CreateWindowExW, DefWindowProcW, DispatchMessageW, LoadCursorW, PeekMessageW,
-        PostQuitMessage, RegisterClassW, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, IDC_ARROW, MSG, PM_REMOVE, WNDCLASSW,
-        WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        self, CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, PostQuitMessage,
+        RegisterClassW, SetWindowPos, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG,
+        PM_REMOVE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, WNDCLASSW, WS_CLIPCHILDREN,
+        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     },
 };
 
-use crate::{input::TextBox, interface::*, support::*};
+use crate::{
+    input::TextBox,
+    interface::*,
+    panels::stack::{Orientation, StackPanel},
+    support::{hiword, loword, Fill},
+    test::Test,
+};
 
 pub struct MainWindow {
     handle: HWND,
-    factory: Option<ID2D1Factory1>,
-    text_factory: Option<IDWriteFactory>,
-    target: Option<ID2D1HwndRenderTarget>,
-    brush: Option<ID2D1SolidColorBrush>,
-    black: Option<ID2D1SolidColorBrush>,
-    text_format: Option<IDWriteTextFormat>,
-    text_box: Box<dyn IWindow>,
+    init: bool,
+    child: Box<dyn IWindow>,
 }
 
 impl MainWindow {
     pub fn new() -> Self {
         Self {
             handle: HWND::default(),
-            factory: None,
-            text_factory: None,
-            target: None,
-            brush: None,
-            black: None,
-            text_format: None,
-            text_box: Box::new(TextBox::new((0, 0), 500, 100)),
+            init: false,
+            child: StackPanel::new(
+                Orientation::Vertical,
+                vec![
+                    Box::new(TextBox::new((0, 0), Fill::Fill, Fill::Fixed(100))),
+                    Test::new(),
+                ],
+                (0, 0),
+                (Fill::Fill, Fill::Fill),
+            ),
         }
     }
 
-    pub fn run(&mut self) -> windows::runtime::Result<()> {
+    pub fn run(&mut self) -> anyhow::Result<()> {
         unsafe {
             self.init(None, None)?;
 
@@ -66,6 +65,11 @@ impl crate::interface::IWindow for MainWindow {
     fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         unsafe {
             match msg {
+                WindowsAndMessaging::WM_SIZE => {
+                    self.resize(loword(lparam.0) as u32, hiword(lparam.0) as u32)
+                        .unwrap();
+                    LRESULT(0)
+                }
                 WindowsAndMessaging::WM_DISPLAYCHANGE => {
                     self.draw().unwrap();
                     LRESULT(0)
@@ -78,43 +82,29 @@ impl crate::interface::IWindow for MainWindow {
             }
         }
     }
-    fn on_create(&mut self) -> windows::runtime::Result<()> {
-        //create factories
-        let factory = create_factory()?;
-        let text_factory = create_text_factory()?;
-        self.factory = Some(factory);
-        self.text_factory = Some(text_factory);
 
-        //create local resources
-        let target = create_render_target(self.factory.as_ref().unwrap(), self.handle)?;
-        self.black = Some(create_brush(&target, &Color::RGB(0.0, 0.0, 0.0))?);
-        self.brush = Some(create_brush(&target, &Color::RGB(0.0, 1.0, 1.0))?);
-        self.target = Some(target);
-        self.text_format = Some(create_formater(self.text_factory.as_ref().unwrap())?);
-
-        Ok(())
-    }
-    fn init(
-        &self,
-        target: Option<HWND>,
-        instance: Option<HINSTANCE>,
-    ) -> windows::runtime::Result<()> {
+    fn init(&self, target: Option<HWND>, instance: Option<HINSTANCE>) -> anyhow::Result<()> {
         if target.is_some() || instance.is_some() {
             panic!("THIS SHOULD NOT BE REACHED. TRIED TO CREATE A WINDOW AS A CHILD");
         }
 
-        if self.factory.is_some() {
+        if self.init {
             return Ok(());
         }
         unsafe {
-            let mut WC_NAME = self.get_wc_name().encode_utf16().collect::<Vec<u16>>();
-            let WC_NAME = PWSTR(WC_NAME.as_mut_ptr());
+            let mut wc_name = self
+                .get_wc_name()
+                .encode_utf16()
+                .chain(once(0))
+                .collect::<Vec<_>>();
+            debug_assert!(wc_name.len() < 256);
+            let wc_name = PWSTR(wc_name.as_mut_ptr());
             let instance = GetModuleHandleW(None);
             debug_assert!(instance.0 != 0);
             let wc = WNDCLASSW {
-                hCursor: LoadCursorW(None, IDC_ARROW),
-                hInstance: instance,
-                lpszClassName: WC_NAME,
+                // hCursor: LoadCursorW(None, IDC_ARROW),
+                // hInstance: instance,
+                lpszClassName: wc_name,
 
                 style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: Some(Self::wnd_proc),
@@ -124,10 +114,9 @@ impl crate::interface::IWindow for MainWindow {
 
             let atom = RegisterClassW(&wc);
             debug_assert!(atom != 0);
-
             let handle = CreateWindowExW(
                 Default::default(),
-                WC_NAME,
+                wc_name,
                 "Sample Window",
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
                 CW_USEDEFAULT,
@@ -142,7 +131,7 @@ impl crate::interface::IWindow for MainWindow {
             debug_assert!(handle.0 != 0);
             debug_assert!(handle == self.handle);
 
-            self.text_box.init(Some(self.handle), Some(instance))?;
+            self.child.init(Some(handle), Some(instance))?;
         }
         Ok(())
     }
@@ -151,40 +140,51 @@ impl crate::interface::IWindow for MainWindow {
         self.handle = handle;
     }
 
-    fn draw(&mut self) -> windows::runtime::Result<()> {
-        let text = "FooBar";
-        let len: usize = text.len();
-        let target = self.target.as_ref().unwrap();
-        unsafe {
-            target.BeginDraw();
-            target.Clear(&Color::RGB(0.0, 0.0, 0.0).into());
-            let size = target.GetSize();
+    fn on_create(&mut self) -> anyhow::Result<()> {
+        self.init = true;
 
-            let rect = D2D_RECT_F {
-                left: 100.0,
-                top: 100.0,
-                right: size.width - 100.0,
-                bottom: size.height - 100.0,
-            };
-            target.FillRectangle(&rect, self.brush.as_ref().unwrap());
-            let rect = D2D_RECT_F {
-                left: size.width / 2.0 - 50.0,
-                top: size.height / 2.0 - 15.0,
-                right: size.width / 2.0 + 50.0,
-                bottom: size.height / 2.0 + 15.0,
-            };
-            target.DrawText(
-                text,
-                len as u32,
-                self.text_format.as_ref().unwrap(),
-                &rect,
-                self.black.as_ref().unwrap(),
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-            target.EndDraw(std::ptr::null_mut(), std::ptr::null_mut())?;
-        }
-        self.text_box.draw()?;
         Ok(())
+    }
+
+    fn draw(&mut self) -> anyhow::Result<()> {
+        self.child.draw()?;
+        Ok(())
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        if self.handle.0 == 0 || self.child.get_handle().0 == 0 {
+            return Ok(());
+        }
+        let (fill_width, fill_height) = self.child.get_fill();
+        let new_width = match fill_width {
+            Fill::Fill => width,
+            Fill::Fixed(width) => width,
+            Fill::Percent(perc) => (width as f32 * perc).floor() as u32,
+        };
+        let new_height = match fill_height {
+            Fill::Fill => height,
+            Fill::Fixed(height) => height,
+            Fill::Percent(perc) => (height as f32 * perc).floor() as u32,
+        };
+        if !unsafe {
+            SetWindowPos(
+                self.child.get_handle(),
+                None,
+                0,
+                0,
+                dbg!(new_width) as i32,
+                dbg!(new_height) as i32,
+                SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+            .as_bool()
+        } {
+            anyhow::bail!("couldn't set window pos");
+        }
+
+        self.draw()
+    }
+
+    fn get_handle(&self) -> HWND {
+        self.handle
     }
 }

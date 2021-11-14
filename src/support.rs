@@ -1,13 +1,13 @@
 use windows::{
     runtime::Interface,
     Win32::{
-        Foundation::HWND,
+        Foundation::{HWND, PWSTR},
         Graphics::{
             Direct2D::{
-                D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
-                D2D1_BRUSH_PROPERTIES, D2D1_COLOR_F, D2D1_DEBUG_LEVEL_INFORMATION,
+                Common::*, D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget,
+                ID2D1SolidColorBrush, D2D1_BRUSH_PROPERTIES, D2D1_DEBUG_LEVEL_INFORMATION,
                 D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-                D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D_SIZE_U,
+                D2D1_HWND_RENDER_TARGET_PROPERTIES,
             },
             DirectWrite::{
                 DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
@@ -65,7 +65,7 @@ pub fn create_text_factory() -> windows::runtime::Result<IDWriteFactory> {
 }
 
 pub fn create_formater(factory: &IDWriteFactory) -> windows::runtime::Result<IDWriteTextFormat> {
-    let font = "calibri\0";
+    const FONT: PWSTR = PWSTR(utf16_literal::utf16!("calibri\0").as_ptr() as _);
     let mut family = None;
     let family = unsafe {
         factory
@@ -74,21 +74,41 @@ pub fn create_formater(factory: &IDWriteFactory) -> windows::runtime::Result<IDW
     };
     unsafe {
         factory.CreateTextFormat(
-            font,
+            FONT,
             family,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
             16.0,
-            font,
+            FONT,
         )
     }
+}
+
+#[derive(Clone, Copy)]
+#[allow(unused)]
+pub enum Fill {
+    Fill,
+    Percent(f32),
+    Fixed(u32),
+}
+
+pub fn loword(i: isize) -> u16 {
+    (i & 0xffff) as u16
+}
+
+pub fn hiword(i: isize) -> u16 {
+    ((i >> 16) & 0xffff) as u16
 }
 
 #[derive(Clone, Copy)]
 pub enum Color {
     RGB(f32, f32, f32),
     RGBA(f32, f32, f32, f32),
+}
+
+impl Color {
+    pub const BLACK: Color = Color::RGB(0.0, 0.0, 0.0);
 }
 
 impl Into<D2D1_COLOR_F> for &Color {
