@@ -1,13 +1,16 @@
 use windows::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-    UI::WindowsAndMessaging::{self, DefWindowProcW, CREATESTRUCTW, GWLP_USERDATA},
+    UI::{
+        Input::KeyboardAndMouse,
+        WindowsAndMessaging::{self, DefWindowProcW, CREATESTRUCTW, GWLP_USERDATA},
+    },
 };
 
 use crate::support::{hiword, loword, Fill, GetWindowLong, SetWindowLong};
 
 pub trait IWindow {
     /// handle any messages from the win32 api.
-    fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
+    fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> anyhow::Result<()>;
 
     /// This will be called before any other operation can occur.  It should call init on any children it may have.
     /// target and instance will be [None] if root.  should init all childern.
@@ -40,9 +43,18 @@ pub trait IWindow {
         Ok(())
     }
 
-    /// do your drawing here. should call [draw](IWindow::draw) on any childern
+    /// handle click events.
+    fn on_click(&mut self, _pos: (i32, i32)) -> anyhow::Result<()> {
+        unsafe {
+            KeyboardAndMouse::SetFocus(self.get_handle());
+        }
+        Ok(())
+    }
+
+    /// do your drawing here. You must call [draw](IWindow::draw) on any childern
     fn draw(&mut self) -> anyhow::Result<()>;
 
+    /// handle resizing the control.
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()>;
 
     fn get_wc_name(&self) -> &'static str {
@@ -77,13 +89,26 @@ pub trait IWindow {
         } else {
             let this = GetWindowLong(hwnd, GWLP_USERDATA) as *mut Self;
             if !this.is_null() {
-                if msg == WindowsAndMessaging::WM_SIZE {
-                    let width = loword(lparam.0);
-                    let height = hiword(lparam.0);
+                let this = &mut (*this);
+                match msg {
+                    WindowsAndMessaging::WM_PAINT => {
+                        this.draw().unwrap();
+                    }
+                    WindowsAndMessaging::WM_SIZE => {
+                        let width = loword(lparam.0);
+                        let height = hiword(lparam.0);
 
-                    (*this).resize(width as u32, height as u32).unwrap();
-                } else {
-                    return (*this).handle_message(msg, wparam, lparam);
+                        this.resize(width as u32, height as u32).unwrap();
+                    }
+
+                    WindowsAndMessaging::WM_LBUTTONDOWN => {
+                        let x = loword(lparam.0) as i32;
+                        let y = hiword(lparam.0) as i32;
+                        this.on_click((x, y)).unwrap();
+                    }
+                    _ => {
+                        this.handle_message(msg, wparam, lparam).unwrap();
+                    }
                 }
             }
         }

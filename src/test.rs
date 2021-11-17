@@ -1,14 +1,24 @@
-use std::{iter::once, sync::atomic::{AtomicBool, Ordering}};
+use std::{
+    iter::once,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use crate::{interface::IWindow, support::*};
-use windows::Win32::{Foundation::{HWND, PWSTR, RECT}, Graphics::{
+use windows::Win32::{
+    Foundation::{HWND, PWSTR, RECT},
+    Graphics::{
         Direct2D::{
             Common::{D2D_RECT_F, D2D_SIZE_U},
             ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
             D2D1_DRAW_TEXT_OPTIONS_NONE,
         },
         DirectWrite::{IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL},
-    }, UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, GetClientRect, IDC_ARROW, LoadCursorW, RegisterClassW, WNDCLASSW, WS_CHILDWINDOW, WS_VISIBLE}};
+    },
+    UI::WindowsAndMessaging::{
+        CreateWindowExW, GetClientRect, LoadCursorW, RegisterClassW, CS_HREDRAW, CS_VREDRAW,
+        CW_USEDEFAULT, IDC_ARROW, WNDCLASSW, WS_CHILDWINDOW, WS_VISIBLE,
+    },
+};
 pub struct Test {
     handle: HWND,
     factory: Option<ID2D1Factory1>,
@@ -17,11 +27,11 @@ pub struct Test {
     brush: Option<ID2D1SolidColorBrush>,
     black: Option<ID2D1SolidColorBrush>,
     text_format: Option<IDWriteTextFormat>,
-    fill : (Fill,Fill),
+    fill: (Fill, Fill),
 }
 
 impl Test {
-    pub fn new(fill:(Fill,Fill)) -> Box<Self> {
+    pub fn new(fill: (Fill, Fill)) -> Box<Self> {
         Box::new(Self {
             handle: HWND::default(),
             factory: None,
@@ -38,11 +48,11 @@ impl Test {
 impl IWindow for Test {
     fn handle_message(
         &mut self,
-        msg: u32,
-        wparam: windows::Win32::Foundation::WPARAM,
-        lparam: windows::Win32::Foundation::LPARAM,
-    ) -> windows::Win32::Foundation::LRESULT {
-        unsafe { DefWindowProcW(self.handle, msg, wparam, lparam) }
+        _msg: u32,
+        _wparam: windows::Win32::Foundation::WPARAM,
+        _lparam: windows::Win32::Foundation::LPARAM,
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn init(
@@ -66,20 +76,23 @@ impl IWindow for Test {
             let wc_name = PWSTR(wc_name.as_mut_ptr());
             lazy_static::lazy_static! {
                 static ref REGISTERED : AtomicBool = AtomicBool::new(false);
+                static ref LOCK : std::sync::Mutex<()> = std::sync::Mutex::new(());
             }
-            if !REGISTERED.load(Ordering::Acquire) {
-
-                let wc = WNDCLASSW {
-                    style: CS_VREDRAW | CS_HREDRAW,
-                    hCursor: LoadCursorW(None, IDC_ARROW),
-                    lpfnWndProc: Some(Self::wnd_proc),
-                    hInstance: instance,
-                    lpszClassName: wc_name,
-                    ..Default::default()
-                };
-                let atom = RegisterClassW(&wc);
-                debug_assert!(atom != 0, "Failed to register class");
-                REGISTERED.store(true, Ordering::Release);
+            {
+                let _key = LOCK.lock().unwrap();
+                if !REGISTERED.load(Ordering::Acquire) {
+                    let wc = WNDCLASSW {
+                        style: CS_VREDRAW | CS_HREDRAW,
+                        hCursor: LoadCursorW(None, IDC_ARROW),
+                        lpfnWndProc: Some(Self::wnd_proc),
+                        hInstance: instance,
+                        lpszClassName: wc_name,
+                        ..WNDCLASSW::default()
+                    };
+                    let atom = RegisterClassW(&wc);
+                    debug_assert!(atom != 0, "Failed to register class");
+                    REGISTERED.store(true, Ordering::Release);
+                }
             }
             let handle = CreateWindowExW(
                 Default::default(),
@@ -108,7 +121,7 @@ impl IWindow for Test {
 
     fn on_create(&mut self) -> anyhow::Result<()> {
         let factory = create_factory()?;
-        let text_factory = create_text_factory()?;
+        let text_factory = text::create_factory()?;
 
         self.factory = Some(factory);
         self.text_factory = Some(text_factory);
@@ -116,7 +129,7 @@ impl IWindow for Test {
         let target = create_render_target(self.factory.as_ref().unwrap(), self.handle)?;
         self.black = Some(create_brush(&target, &Color::BLACK)?);
         self.brush = Some(create_brush(&target, &Color::RGB(0.0, 1.0, 1.0))?);
-        self.text_format = Some(create_formater(self.text_factory.as_ref().unwrap())?);
+        self.text_format = Some(text::create_formater(self.text_factory.as_ref().unwrap())?);
         self.target = Some(target);
         Ok(())
     }
@@ -162,12 +175,9 @@ impl IWindow for Test {
 
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         if let Some(target) = self.target.as_ref() {
-            dbg!(unsafe { target.GetSize() });
-            let size = D2D_SIZE_U {
-                width: width,
-                height: height,
-            };
-            unsafe { target.Resize(&dbg!(size)) }?;
+            unsafe { target.GetSize() };
+            let size = D2D_SIZE_U { width, height };
+            unsafe { target.Resize(&size) }?;
         }
         self.draw()
     }

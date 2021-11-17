@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
+mod caret;
 mod input;
 mod interface;
 mod panels;

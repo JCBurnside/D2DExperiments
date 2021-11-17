@@ -13,7 +13,6 @@ lazy_static = "1.4.0"
 widestring = "0.5.1" 
 [dependencies.windows]
 version = "0.26.0"
-default-features = false
 features = [
     "std",
     "Win32_Foundation",

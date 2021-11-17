@@ -1,19 +1,22 @@
-use std::iter::once;
+use std::{
+    iter::once,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use windows::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, PWSTR, WPARAM},
+    Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, PWSTR, RECT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
-        self, CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, PostQuitMessage,
-        RegisterClassW, SetWindowPos, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG,
-        PM_REMOVE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, WNDCLASSW, WS_CLIPCHILDREN,
-        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        self, CreateWindowExW, DispatchMessageW, GetMessageW, GetWindowRect, LoadCursorW,
+        PostQuitMessage, RegisterClassW, SetWindowPos, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
+        CW_USEDEFAULT, IDC_ARROW, MSG, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, WNDCLASSW,
+        WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     },
 };
 
 use crate::{
     input::TextBox,
-    interface::*,
+    interface::IWindow,
     panels::stack::{Orientation, StackPanel},
     support::{hiword, loword, Fill},
     test::Test,
@@ -33,8 +36,15 @@ impl MainWindow {
             child: StackPanel::new(
                 Orientation::Vertical,
                 vec![
-                    Box::new(TextBox::new((0, 0), Fill::Fill, Fill::Fixed(100))),
-                    StackPanel::new(Orientation::Horizontal, vec![Test::new((Fill::Percent(0.25),Fill::Fill)),Test::new((Fill::Percent(0.75),Fill::Fill))],(Fill::Fill,Fill::Fill))
+                    TextBox::new((0, 0), Fill::Fill, Fill::Fixed(100)),
+                    StackPanel::new(
+                        Orientation::Horizontal,
+                        vec![
+                            Test::new((Fill::Percent(0.25), Fill::Fill)),
+                            Test::new((Fill::Percent(0.50), Fill::Fill)),
+                        ],
+                        (Fill::Fill, Fill::Fill),
+                    ),
                 ],
                 (Fill::Fill, Fill::Fill),
             ),
@@ -46,46 +56,58 @@ impl MainWindow {
             self.init(None, None)?;
 
             let mut msg = MSG::default();
-            loop {
-                self.draw()?;
-
-                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                    if msg.message == WindowsAndMessaging::WM_QUIT {
-                        return Ok(());
-                    }
-                    TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
+            let mut state;
+            while {
+                state = GetMessageW(&mut msg, None, 0, 0);
+                state.0 != 0
+            } {
+                if state.0 == -1 {
+                    let err = GetLastError();
+                    anyhow::bail!(format!("GetMessage {:?}", err));
                 }
+
+                if msg.message == WindowsAndMessaging::WM_QUIT {
+                    return Ok(());
+                }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
+            Ok(())
         }
     }
 }
-impl crate::interface::IWindow for MainWindow {
-    fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+impl IWindow for MainWindow {
+    fn handle_message(
+        &mut self,
+        msg: u32,
+        #[allow(unused)] wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> anyhow::Result<()> {
         unsafe {
             match msg {
                 WindowsAndMessaging::WM_SIZE => {
                     self.resize(loword(lparam.0) as u32, hiword(lparam.0) as u32)
                         .unwrap();
-                    LRESULT(0)
+                    Ok(())
                 }
                 WindowsAndMessaging::WM_DISPLAYCHANGE => {
                     self.draw().unwrap();
-                    LRESULT(0)
+                    Ok(())
                 }
                 WindowsAndMessaging::WM_DESTROY => {
                     PostQuitMessage(0);
-                    LRESULT(0)
+                    Ok(())
                 }
-                _ => DefWindowProcW(self.handle, msg, wparam, lparam),
+                _ => Ok(()),
             }
         }
     }
 
     fn init(&self, target: Option<HWND>, instance: Option<HINSTANCE>) -> anyhow::Result<()> {
-        if target.is_some() || instance.is_some() {
-            panic!("THIS SHOULD NOT BE REACHED. TRIED TO CREATE A WINDOW AS A CHILD");
-        }
+        assert!(
+            !(target.is_some() || instance.is_some()),
+            "THIS SHOULD NOT BE REACHED. TRIED TO CREATE A WINDOW AS A CHILD"
+        );
 
         if self.init {
             return Ok(());
@@ -100,19 +122,29 @@ impl crate::interface::IWindow for MainWindow {
             let wc_name = PWSTR(wc_name.as_mut_ptr());
             let instance = GetModuleHandleW(None);
             debug_assert!(instance.0 != 0);
-            let wc = WNDCLASSW {
-                // hCursor: LoadCursorW(None, IDC_ARROW),
-                // hInstance: instance,
-                lpszClassName: wc_name,
+            lazy_static::lazy_static! {
+                static ref REGISTERED : AtomicBool = AtomicBool::new(false);
+                static ref LOCK : std::sync::Mutex<()> = std::sync::Mutex::new(());
+            }
+            {
+                let _key = LOCK.lock().unwrap();
+                if !REGISTERED.load(Ordering::Acquire) {
+                    let wc = WNDCLASSW {
+                        hCursor: LoadCursorW(None, IDC_ARROW),
+                        hInstance: instance,
+                        lpszClassName: wc_name,
 
-                style: CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(Self::wnd_proc),
+                        style: CS_HREDRAW | CS_VREDRAW,
+                        lpfnWndProc: Some(Self::wnd_proc),
 
-                ..Default::default()
-            };
+                        ..WNDCLASSW::default()
+                    };
+                    let atom = RegisterClassW(&wc);
+                    debug_assert!(atom != 0);
+                    REGISTERED.store(true, Ordering::Release);
+                }
+            }
 
-            let atom = RegisterClassW(&wc);
-            debug_assert!(atom != 0);
             let handle = CreateWindowExW(
                 Default::default(),
                 wc_name,
@@ -131,6 +163,18 @@ impl crate::interface::IWindow for MainWindow {
             debug_assert!(handle == self.handle);
 
             self.child.init(Some(handle), Some(instance))?;
+            let mut rect = RECT::default();
+            GetWindowRect(handle, &mut rect);
+
+            SetWindowPos(
+                handle,
+                None,
+                rect.left,
+                rect.top,
+                rect.right - rect.left + 1,
+                rect.bottom - rect.top + 1,
+                SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
         Ok(())
     }
@@ -171,8 +215,8 @@ impl crate::interface::IWindow for MainWindow {
                 None,
                 0,
                 0,
-                dbg!(new_width) as i32,
-                dbg!(new_height) as i32,
+                new_width as i32,
+                new_height as i32,
                 SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE,
             )
             .as_bool()

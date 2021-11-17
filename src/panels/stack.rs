@@ -1,11 +1,14 @@
-use std::{iter::once, sync::atomic::{AtomicBool, Ordering}};
+use std::{
+    iter::once,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use windows::Win32::{
     Foundation::{HWND, PWSTR, RECT},
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, GetClientRect, LoadCursorW, RegisterClassW, SetWindowPos,
-        CS_HREDRAW, CS_VREDRAW, IDC_ARROW, SWP_DRAWFRAME, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
-        SWP_NOZORDER, WNDCLASSW, WS_CHILDWINDOW, WS_CLIPCHILDREN, WS_VISIBLE,
+        CreateWindowExW, GetClientRect, LoadCursorW, RegisterClassW, SetWindowPos, CS_HREDRAW,
+        CS_VREDRAW, IDC_ARROW, SWP_DRAWFRAME, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+        WNDCLASSW, WS_CHILDWINDOW, WS_CLIPCHILDREN, WS_VISIBLE,
     },
 };
 
@@ -33,24 +36,20 @@ impl StackPanel {
             orientation,
             children,
             fill,
-            pos:(0,0),
+            pos: (0, 0),
             handle: HWND(0),
         })
     }
 }
 
 impl IWindow for StackPanel {
-    fn get_fill(&self) -> (Fill, Fill) {
-        self.fill
-    }
-
     fn handle_message(
         &mut self,
-        msg: u32,
-        wparam: windows::Win32::Foundation::WPARAM,
-        lparam: windows::Win32::Foundation::LPARAM,
-    ) -> windows::Win32::Foundation::LRESULT {
-        unsafe { DefWindowProcW(self.handle, msg, wparam, lparam) }
+        _msg: u32,
+        _wparam: windows::Win32::Foundation::WPARAM,
+        _lparam: windows::Win32::Foundation::LPARAM,
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn init(
@@ -69,20 +68,24 @@ impl IWindow for StackPanel {
             let wc_name = PWSTR(wc_name.as_mut_ptr());
             lazy_static::lazy_static! {
                 static ref REGISTERED : AtomicBool = AtomicBool::new(false);
+                static ref LOCK : std::sync::Mutex<()> = std::sync::Mutex::new(());
             }
-            if !REGISTERED.load(Ordering::Acquire) {
-
-                let wc = WNDCLASSW {
-                    style: CS_VREDRAW | CS_HREDRAW,
-                    hCursor: LoadCursorW(None, IDC_ARROW),
-                    lpfnWndProc: Some(Self::wnd_proc),
-                    hInstance: instance,
-                    lpszClassName: wc_name,
-                    ..Default::default()
-                };
-                let atom = RegisterClassW(&wc);
-                debug_assert!(atom != 0, "Failed to register class");
-                REGISTERED.store(true, Ordering::Release);
+            {
+                //lock to make sure you can't register it twice
+                let _key = LOCK.lock().unwrap();
+                if !REGISTERED.load(Ordering::Acquire) {
+                    let wc = WNDCLASSW {
+                        style: CS_VREDRAW | CS_HREDRAW,
+                        hCursor: LoadCursorW(None, IDC_ARROW),
+                        lpfnWndProc: Some(Self::wnd_proc),
+                        hInstance: instance,
+                        lpszClassName: wc_name,
+                        ..Default::default()
+                    };
+                    let atom = RegisterClassW(&wc);
+                    debug_assert!(atom != 0, "Failed to register class");
+                    REGISTERED.store(true, Ordering::Release);
+                }
             }
 
             let mut rect = RECT::default();
@@ -139,21 +142,17 @@ impl IWindow for StackPanel {
         Ok(())
     }
 
-    fn get_handle(&self) -> HWND {
-        self.handle
-    }
-
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         if self.handle.0 == 0 || self.children.iter().any(|c| c.get_handle().0 == 0) {
             return Ok(());
         }
         match self.orientation {
             Orientation::Horizontal => {
-                let mut used_width = 0u32;
+                let mut used_width = 0;
                 for child in self.children.iter_mut() {
                     let (width_fill, height_fill) = child.get_fill();
                     let width = match width_fill {
-                        Fill::Fill => width.checked_sub(used_width).unwrap_or(0) as u32,
+                        Fill::Fill => width.saturating_sub(used_width) as u32,
                         Fill::Fixed(width) => width,
                         Fill::Percent(perc) => (width as f32 * perc).floor() as u32,
                     };
@@ -178,7 +177,7 @@ impl IWindow for StackPanel {
                 }
             }
             Orientation::Vertical => {
-                let mut used_height = 0u32;
+                let mut used_height = 0;
                 for child in self.children.iter_mut() {
                     let (width_fill, height_fill) = child.get_fill();
                     let width = match width_fill {
@@ -187,7 +186,7 @@ impl IWindow for StackPanel {
                         Fill::Percent(perc) => (width as f32 * perc).floor() as u32,
                     };
                     let height = match height_fill {
-                        Fill::Fill => height.checked_sub(used_height).unwrap_or(0) as u32,
+                        Fill::Fill => height.saturating_sub(used_height) as u32,
                         Fill::Fixed(height) => height,
                         Fill::Percent(perc) => (height as f32 * perc).floor() as u32,
                     };
@@ -198,9 +197,9 @@ impl IWindow for StackPanel {
                             child.get_handle(),
                             None,
                             0,
-                            dbg!(y) as i32,
-                            dbg!(width) as i32,
-                            dbg!(height) as i32,
+                            y as i32,
+                            width as i32,
+                            height as i32,
                             SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE,
                         )
                     };
@@ -208,5 +207,13 @@ impl IWindow for StackPanel {
             }
         }
         Ok(())
+    }
+
+    fn get_handle(&self) -> HWND {
+        self.handle
+    }
+
+    fn get_fill(&self) -> (Fill, Fill) {
+        self.fill
     }
 }

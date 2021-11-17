@@ -1,31 +1,21 @@
-use std::iter::once;
-
-use windows::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, PWSTR, RECT, WPARAM},
-    Graphics::{
-        Direct2D::{
-            Common::{D2D_RECT_F, D2D_SIZE_U},
-            ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
-        },
-        DirectWrite::{IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL},
-    },
-    UI::{
-        Input::KeyboardAndMouse,
-        WindowsAndMessaging::{
-            self, CreateWindowExW, DefWindowProcW, GetClientRect, LoadCursorW, RegisterClassW,
-            CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_IBEAM, WNDCLASSW, WS_BORDER, WS_CHILDWINDOW,
-            WS_VISIBLE,
-        },
-    },
+use std::{
+    iter::once,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
+use windows::Win32::{Foundation::{BOOL, GetLastError, HINSTANCE, HWND, LPARAM, PWSTR, RECT, WPARAM}, Graphics::{Direct2D::{
+            Common::{D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_U},
+            ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
+        }, DirectWrite::{DWRITE_HIT_TEST_METRICS, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout}, Gdi::{RedrawWindow, RDW_INVALIDATE}}, UI::{Input::KeyboardAndMouse::{self, SetFocus}, WindowsAndMessaging::{
+            self, CreateWindowExW, GetClientRect, LoadCursorW, RegisterClassW, SetCaretPos,
+            CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_IBEAM, WNDCLASSW, WS_BORDER, WS_CHILDWINDOW,
+            WS_VISIBLE,
+        }}};
+
 use crate::{
+    caret::Caret,
     interface::*,
-    support::{
-        self, create_brush, create_factory, create_formater, create_render_target,
-        create_text_factory, Color, Fill,
-    },
+    support::{self, create_brush, create_factory, create_render_target, text, Color, Fill},
 };
 
 pub struct TextBox {
@@ -33,80 +23,149 @@ pub struct TextBox {
     target: Option<ID2D1HwndRenderTarget>,
     text_factory: Option<IDWriteFactory>,
     text_format: Option<IDWriteTextFormat>,
+    text_layout: Option<IDWriteTextLayout>,
     green: Option<ID2D1SolidColorBrush>,
     black: Option<ID2D1SolidColorBrush>,
     handle: HWND,
     data: String,
-    _caret_pos: usize,
+    caret_pos: usize,
     pos: (i32, i32),
     width: Fill,
     height: Fill,
+    caret: Option<Caret>,
 }
 
 impl TextBox {
-    pub fn new(pos: (i32, i32), width: Fill, height: Fill) -> Self {
-        Self {
+    pub fn new(pos: (i32, i32), width: Fill, height: Fill) -> Box<Self> {
+        Box::new(Self {
             factory: None,
             target: None,
             green: None,
             black: None,
             text_factory: None,
             text_format: None,
+            text_layout: None,
             handle: HWND::default(),
             data: String::from("TEXTBOX"),
-            _caret_pos: 0,
+            caret_pos: 0,
             pos,
             width,
             height,
+            caret: None,
+        })
+    }
+    fn update_caret(&mut self) {
+        unsafe { 
+            if self.caret_pos == 0 {
+                SetCaretPos(0, 0);
+            } else {
+                let size = self.target.as_ref().unwrap().GetSize();
+                let layout = text::create_layout(self.text_factory.as_ref().unwrap(), self.text_format.as_ref().unwrap(),(size.width,size.height), &self.data[..self.caret_pos]).unwrap();
+                let width = layout.GetMetrics().unwrap().width;
+                SetCaretPos(width as i32, 0);
+            }
         }
     }
 }
 
 impl IWindow for TextBox {
-    fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    fn on_click(&mut self, pos: (i32, i32)) -> anyhow::Result<()> {
+        unsafe { SetFocus(self.handle) };
+        let pos = self
+            .text_layout
+            .as_ref()
+            .and_then(|layout| unsafe { 
+                let mut trailing = BOOL::default();
+                let mut inside = BOOL::default();
+                let mut hittestmetrics = DWRITE_HIT_TEST_METRICS::default();
+                layout.HitTestPoint(pos.0 as f32, pos.1 as f32, &mut trailing, &mut inside, &mut hittestmetrics).unwrap();
+
+                Some(if inside.as_bool() || trailing.as_bool() { hittestmetrics.textPosition + 1} else { hittestmetrics.textPosition } as usize)
+             })
+            .unwrap();
+        self.caret_pos = pos;
+        self.update_caret();
+        Ok(())
+    }
+    fn handle_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> anyhow::Result<()> {
         unsafe {
             match msg {
-                // WindowsAndMessaging::WM_PAINT | WindowsAndMessaging::WM_DISPLAYCHANGE => {
-                //     self.draw();
-                //     LRESULT(0)
-                // },
-                // WindowsAndMessaging::WM_SIZE if wparam.0 as u32 == WindowsAndMessaging::SIZE_MAXIMIZED => {
-                //     self.draw();
-                //     DefWindowProcW(self.handle, msg, wparam, lparam)
-                // },
-                WindowsAndMessaging::WM_LBUTTONDOWN => {
-                    KeyboardAndMouse::SetFocus(self.handle);
-                    LRESULT(0)
+                WindowsAndMessaging::WM_SETFOCUS => {
+                    let height = self
+                        .text_layout
+                        .as_ref()
+                        .and_then(|layout| layout.GetMetrics().ok())
+                        .and_then(|metrics| Some(metrics.height))
+                        .unwrap_or(20.0) as _;
+                    let mut caret = Caret::new(self.handle, 2, height);
+                    caret.show();
+                    self.caret = Some(caret);
+                }
+
+                WindowsAndMessaging::WM_KILLFOCUS => {
+                    self.caret = None;
                 }
                 WindowsAndMessaging::WM_CHAR => {
-                    if wparam.0 as u16 == KeyboardAndMouse::VK_BACK.0 {
-                        //backspace char
-                        self.data.pop();
-                        // self.draw().unwrap();
-                        return LRESULT(0);
-                    }
-                    if wparam.0 as u16 == KeyboardAndMouse::VK_RETURN.0 {
+                    if wparam.0 as u16 == KeyboardAndMouse::VK_BACK.0 && self.data.len() != 0 {
+                        self.data.remove(self.caret_pos-1);
+                        self.caret_pos-=1;
+                        self.update_caret();
+                    } else if wparam.0 as u16 == KeyboardAndMouse::VK_RETURN.0
+                        || wparam.0 as u16 == KeyboardAndMouse::VK_ESCAPE.0
+                    {
                         KeyboardAndMouse::SetFocus(HWND::default());
-                        return LRESULT(0);
-                    }
-                    let meta = support::Keymeta::from_bytes(u32::to_ne_bytes(lparam.0 as u32));
-                    let repeat = meta.count();
-                    let to_add = char::from_u32(wparam.0 as u32);
-                    match to_add {
-                        Some(c) => {
+                    } else {
+                        let meta = support::Keymeta::from_bytes(u32::to_ne_bytes(lparam.0 as u32));
+                        let repeat = meta.count();
+                        if let Some(c) = char::from_u32(wparam.0 as u32) {
                             for _ in 0..repeat {
-                                self.data.push(c);
+                                self.data.insert(self.caret_pos,c);
+                                self.caret_pos+=1;
                             }
-                            // self.draw();
                         }
-                        None => {
-                            return DefWindowProcW(self.handle, msg, wparam, lparam);
+                        self.update_caret();
+                    }
+                    self.text_layout = None;
+                    RedrawWindow(self.handle, std::ptr::null_mut(), None, RDW_INVALIDATE);
+                } 
+                WindowsAndMessaging::WM_KEYDOWN => {
+                    if self.caret.is_some() {
+
+                        const LEFT : u16 = KeyboardAndMouse::VK_LEFT.0;
+                        const RIGHT : u16 = KeyboardAndMouse::VK_RIGHT.0;
+                        const DELETE : u16 = KeyboardAndMouse::VK_DELETE.0;
+                        const HOME : u16 = KeyboardAndMouse::VK_HOME.0;
+                        const END : u16 = KeyboardAndMouse::VK_END.0;
+                        match wparam.0 as u16 {
+                            LEFT => {
+                                self.caret_pos = self.caret_pos.saturating_sub(1);
+                                self.update_caret();
+                            }
+                            RIGHT => {
+                                self.caret_pos = (self.caret_pos + 1).min(self.data.len());
+                                self.update_caret();
+                            }
+                            DELETE if self.caret_pos < self.data.len() => {
+                                self.data.remove(self.caret_pos);
+                                self.text_layout = None;
+                                RedrawWindow(self.handle, std::ptr::null_mut(), None, RDW_INVALIDATE);
+                            }
+                            HOME => {
+                                self.caret_pos = 0;
+                                self.update_caret();
+                            }
+                            END => {
+                                self.caret_pos = self.data.len();
+                                self.update_caret();
+                            }
+                            _=>()
                         }
                     }
-                    LRESULT(0)
                 }
-                _ => DefWindowProcW(self.handle, msg, wparam, lparam),
+                _ => (),
             }
+
+            Ok(())
         }
     }
 
@@ -124,20 +183,30 @@ impl IWindow for TextBox {
                 .collect::<Vec<_>>();
             debug_assert!(wc_name.len() < 256);
             let wc_name = PWSTR(wc_name.as_mut_ptr());
-            let wc = WNDCLASSW {
-                style: CS_VREDRAW | CS_HREDRAW,
-                hCursor: LoadCursorW(None, IDC_IBEAM),
-                lpfnWndProc: Some(Self::wnd_proc),
-                hInstance: instance,
-                lpszClassName: wc_name,
-                ..Default::default()
-            };
+            lazy_static::lazy_static! {
+                static ref REGISTERED : AtomicBool = AtomicBool::new(false);
+                static ref LOCK : std::sync::Mutex<()> = std::sync::Mutex::new(());
+            }
+            {
+                let _key = LOCK.lock().unwrap();
+                if !REGISTERED.load(Ordering::Acquire) {
+                    let wc = WNDCLASSW {
+                        style: CS_VREDRAW | CS_HREDRAW,
+                        hCursor: LoadCursorW(None, IDC_IBEAM),
+                        lpfnWndProc: Some(Self::wnd_proc),
+                        hInstance: instance,
+                        lpszClassName: wc_name,
+                        ..Default::default()
+                    };
+                    let atom = RegisterClassW(&wc);
+                    debug_assert!(atom != 0, "FAILED TO REGISTER CLASS");
+                    REGISTERED.store(true, Ordering::Release);
+                }
+            }
             let mut rect = RECT::default();
             if !GetClientRect(parent, &mut rect).as_bool() {
                 anyhow::bail!("Couldn't get parent rect");
             }
-            let atom = RegisterClassW(&wc);
-            debug_assert!(atom != 0, "FAILED TO REGISTER CLASS");
             let handle = CreateWindowExW(
                 Default::default(),
                 wc_name,
@@ -166,12 +235,13 @@ impl IWindow for TextBox {
 
     fn on_create(&mut self) -> anyhow::Result<()> {
         self.factory = Some(create_factory()?);
-        self.text_factory = Some(create_text_factory()?);
-        let target = create_render_target(&self.factory.as_ref().unwrap(), self.handle).unwrap();
+        self.text_factory = Some(text::create_factory()?);
+        let target = create_render_target(self.factory.as_ref().unwrap(), self.handle).unwrap();
         self.green = Some(create_brush(&target, &Color::RGB(0.0, 1.0, 0.0)).unwrap());
         self.black = Some(create_brush(&target, &Color::RGB(0.0, 0.0, 0.0)).unwrap());
         self.target = Some(target);
-        self.text_format = Some(create_formater(self.text_factory.as_ref().unwrap()).unwrap());
+        self.text_format =
+            Some(text::create_formater(self.text_factory.as_ref().unwrap()).unwrap());
         Ok(())
     }
 
@@ -181,7 +251,20 @@ impl IWindow for TextBox {
         }
         let target = self.target.as_ref().unwrap();
         let green = self.green.as_ref().unwrap();
+        if self.text_layout.is_none() {
+            let size = unsafe { target.GetSize() };
+            self.text_layout = Some(
+                text::create_layout(
+                    self.text_factory.as_ref().unwrap(),
+                    self.text_format.as_ref().unwrap(),
+                    (size.width, size.height),
+                    &self.data,
+                )
+                .expect("Faild to create layout"),
+            )
+        }
         unsafe {
+            let _caret_key = self.caret.as_mut().map(|c| c.pause());
             let size = target.GetSize();
             let rect = D2D_RECT_F {
                 top: 0.0,
@@ -190,20 +273,13 @@ impl IWindow for TextBox {
                 bottom: size.height,
             };
 
-            let mut data = self.data.encode_utf16().collect::<Vec<_>>();
-            let len = data.len();
-            let data = PWSTR(data.as_mut_ptr());
             target.BeginDraw();
-
             target.FillRectangle(&rect, green);
-            target.DrawText(
-                data,
-                len as u32,
-                self.text_format.as_ref().unwrap(),
-                &rect,
+            target.DrawTextLayout(
+                &D2D_POINT_2F { x: 0.0, y: 0.0 },
+                self.text_layout.as_ref().unwrap(),
                 self.black.as_ref().unwrap(),
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
+                Default::default(),
             );
             target.EndDraw(std::ptr::null_mut(), std::ptr::null_mut())?;
         }
@@ -212,20 +288,17 @@ impl IWindow for TextBox {
 
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         if let Some(target) = self.target.as_ref() {
-            let size = D2D_SIZE_U {
-                width: width,
-                height: height,
-            };
+            let size = D2D_SIZE_U { width, height };
             unsafe { target.Resize(&size)? };
         }
-        self.draw()
-    }
-
-    fn get_fill(&self) -> (Fill, Fill) {
-        (self.width, self.height)
+        Ok(())
     }
 
     fn get_handle(&self) -> HWND {
         self.handle
+    }
+
+    fn get_fill(&self) -> (Fill, Fill) {
+        (self.width, self.height)
     }
 }

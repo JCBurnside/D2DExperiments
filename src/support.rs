@@ -1,19 +1,13 @@
+pub mod text;
 use windows::{
     runtime::Interface,
     Win32::{
-        Foundation::{HWND, PWSTR},
-        Graphics::{
-            Direct2D::{
-                Common::*, D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget,
-                ID2D1SolidColorBrush, D2D1_BRUSH_PROPERTIES, D2D1_DEBUG_LEVEL_INFORMATION,
-                D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-                D2D1_HWND_RENDER_TARGET_PROPERTIES,
-            },
-            DirectWrite::{
-                DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
-                DWRITE_FACTORY_TYPE_ISOLATED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_WEIGHT_NORMAL,
-            },
+        Foundation::HWND,
+        Graphics::Direct2D::{
+            Common::*, D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget,
+            ID2D1SolidColorBrush, D2D1_BRUSH_PROPERTIES, D2D1_DEBUG_LEVEL_INFORMATION,
+            D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+            D2D1_HWND_RENDER_TARGET_PROPERTIES,
         },
         UI::WindowsAndMessaging::{GetClientRect, WINDOW_LONG_PTR_INDEX},
     },
@@ -46,43 +40,16 @@ pub fn create_render_target(
     let options = {
         let mut rc = Default::default();
         unsafe { GetClientRect(hwnd, &mut rc) };
-        let mut out = D2D1_HWND_RENDER_TARGET_PROPERTIES::default();
-        out.hwnd = hwnd;
-        out.pixelSize = D2D_SIZE_U {
-            width: (rc.right - rc.left) as _,
-            height: (rc.bottom - rc.top) as _,
-        };
-        out
+        D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U {
+                width: (rc.right - rc.left) as _,
+                height: (rc.bottom - rc.top) as _,
+            },
+            ..Default::default()
+        }
     };
     unsafe { factory.CreateHwndRenderTarget(&Default::default(), &options) }
-}
-
-pub fn create_text_factory() -> windows::runtime::Result<IDWriteFactory> {
-    unsafe {
-        DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, &IDWriteFactory::IID)
-            .and_then(|it| it.cast())
-    }
-}
-
-pub fn create_formater(factory: &IDWriteFactory) -> windows::runtime::Result<IDWriteTextFormat> {
-    const FONT: PWSTR = PWSTR(utf16_literal::utf16!("calibri\0").as_ptr() as _);
-    let mut family = None;
-    let family = unsafe {
-        factory
-            .GetSystemFontCollection(&mut family, false)
-            .map(|()| family.unwrap())?
-    };
-    unsafe {
-        factory.CreateTextFormat(
-            FONT,
-            family,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            16.0,
-            FONT,
-        )
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -102,6 +69,7 @@ pub fn hiword(i: isize) -> u16 {
 }
 
 #[derive(Clone, Copy)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum Color {
     RGB(f32, f32, f32),
     RGBA(f32, f32, f32, f32),
@@ -111,18 +79,18 @@ impl Color {
     pub const BLACK: Color = Color::RGB(0.0, 0.0, 0.0);
 }
 
-impl Into<D2D1_COLOR_F> for &Color {
-    fn into(self) -> D2D1_COLOR_F {
-        match self {
-            &Color::RGB(r, g, b) => D2D1_COLOR_F { r, g, b, a: 1.0 },
-            &Color::RGBA(r, g, b, a) => D2D1_COLOR_F { r, g, b, a },
+impl From<&Color> for D2D1_COLOR_F {
+    fn from(color: &Color) -> D2D1_COLOR_F {
+        match *color {
+            Color::RGB(r, g, b) => D2D1_COLOR_F { r, g, b, a: 1.0 },
+            Color::RGBA(r, g, b, a) => D2D1_COLOR_F { r, g, b, a },
         }
     }
 }
 
-impl Into<D2D1_COLOR_F> for Color {
-    fn into(self) -> D2D1_COLOR_F {
-        match self {
+impl From<Color> for D2D1_COLOR_F {
+    fn from(color: Color) -> D2D1_COLOR_F {
+        match color {
             Color::RGB(r, g, b) => D2D1_COLOR_F { r, g, b, a: 1.0 },
             Color::RGBA(r, g, b, a) => D2D1_COLOR_F { r, g, b, a },
         }
@@ -174,11 +142,11 @@ mod keymeta {
     #![allow(unused)]
     use modular_bitfield::prelude::*;
     #[bitfield]
+    #[allow(unused)]
     pub struct Keymeta {
         pub count: u16,
         scan_code: u8,
         extended: bool,
-        #[allow(unused)]
         reserved: B4,
         context: bool,
         prev: bool,
